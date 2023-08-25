@@ -39,3 +39,32 @@ class DatabaseEvents:
             return list()
 
         return callbacks
+    
+    @staticmethod
+    def execute_select_events(table,data,instance):
+        DatabaseEvents.execute_events(table,DatabaseEvents.SELECT,data,instance)
+
+    @staticmethod
+    def execute_insert_events(table,data,instance):
+        DatabaseEvents.execute_events(table,DatabaseEvents.INSERT,data,instance)
+
+    @staticmethod
+    def execute_update_events(table,data,instance):
+        DatabaseEvents.execute_events(table,DatabaseEvents.UPDATE,data,instance)
+
+    @staticmethod
+    def execute_delete_events(table,data,instance):
+        DatabaseEvents.execute_events(table,DatabaseEvents.DELETE,data,instance)
+    
+    @staticmethod
+    def execute_error_events(table,data,instance):
+        DatabaseEvents.execute_events(table,DatabaseEvents.ERROR,data,instance)
+
+    @staticmethod
+    def execute_events(table:str,event_type:str,data,instance):
+        try:
+            events = DatabaseEvents.get_table_action_events(table,event_type)
+            for event in events:
+                event(data,instance)
+        except:
+            pass
