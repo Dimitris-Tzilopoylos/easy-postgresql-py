@@ -86,7 +86,7 @@ class Database:
     def get_all(self):
         return self.cursor.fetchall()
 
-    def with_transaction(self, callback):
+    def with_transaction(self, callback,):
         result = None
         try:
             self.begin()
@@ -159,29 +159,43 @@ class Database:
             for column in self.columns.values():
                 if column.name in _set:
                     config[column.name] = _set[column.name]
+                    
             if len(config.keys()) == 0:
                 raise DatabaseException(**DatabaseException.NoValueOperation)
-            set_value = ",".join(
-                [f"{col_name}=%s" for col_name in config.keys()])
-            values = list(config.values())
-            q_str = "update {} set {} {}".format(
-                self.get_db_and_table_alias(), set_value, self.get_returning(returning))
+            
+            values = list()
+            cols = list()
+            for col_name,value in config.items():
+                str,arg = Database.get_update_column_to_str(col_name,value)
+                cols.append(str)
+                values.append(arg)
+            
+            where_str,where_args = Where.make_where_clause(self,where,self.table)
+            values.extend(where_args)
+            q_str = "update {} set {} {} {}".format(
+                self.get_db_and_table_alias(), ",".join(cols), where_str,self.get_returning(returning))
             self.query(q_str, values)
             result = self.get_returning_value(returning)
-        except:
+            DatabaseEvents.execute_update_events(self.table,result,self)
+        except Exception as e:
+            DatabaseEvents.execute_error_events(self.table,e,self)
             result = None
         finally:
             return result
 
-    def delete(self, returning=True):
+    def delete(self, where:dict,returning=True):
         try:
-            q_str = "delete from {} {}".format(
-                self.get_db_and_table_alias(), self.get_returning(returning))
-            self.query(q_str)
-        except:
-            pass
+            where_str,where_args = Where.make_where_clause(self,where,self.table)
+            q_str = "delete from {} {} {}".format(
+                self.get_db_and_table_alias(), where_str, self.get_returning(returning))
+            self.query(q_str,where_args)
+            results = self.get_returning_value(returning)
+            DatabaseEvents.execute_delete_events(self.table,results,self)
+        except Exception as e:
+            DatabaseEvents.execute_error_events(self.table,e,self)
+            results = None
         finally:
-            return self.get_returning_value(returning)
+            return results
 
     def insert_many(self, args: list(), returning=True):
         results = dict()
@@ -213,12 +227,26 @@ class Database:
             self.query(query_str, values)
             result = self.get_returning_value(returning)
             if isinstance(result, bool):
+                DatabaseEvents.execute_insert_events(self.table,result,self)
                 return result
+            DatabaseEvents.execute_insert_events(self.table,result[0],self)
             return result[0]
         except Exception as e:
+            DatabaseEvents.execute_error_events(self.table,e,self)
             result = None
         finally:
             return result
+
+    def create_tx(self,args:dict,returning=True):
+        def callback(): 
+            return self.insert_one(args,returning)
+        
+        return self.with_transaction(callback)
+    
+    def create_many_tx(self,args,returning=True):
+        def callback(): 
+            return self.insert_many(args,returning)
+        return self.with_transaction(callback)
 
     def query(self, q_str, args=None):
         if Database.__enable_logger:
@@ -249,6 +277,14 @@ class Database:
             return self.get_all()
         return True
 
+
+    @staticmethod
+    def get_update_column_to_str(col_name:str,config:any):
+        if isinstance(config,dict):
+            for key in SELF_UPDATE_OPERATORS:
+                if key in config:
+                    return f"{col_name} = {col_name} {SELF_UPDATE_OPERATORS[key]} %s",config[key]
+        return f"{col_name} = %s",config
 
     @staticmethod
     def make_limit(limit):
