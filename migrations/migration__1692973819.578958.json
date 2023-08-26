@@ -1,0 +1,7 @@
+{
+    "up": "alter table users add column last2_name text not null default 'dim';",
+    "down": "alter table users drop column last2_name;",
+    "id": "8d4c13e5eb704c119f46156fd255a925",
+    "timestamp": 1692973819.578958,
+    "applied": false
+}

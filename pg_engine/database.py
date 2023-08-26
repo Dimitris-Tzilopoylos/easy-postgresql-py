@@ -1,7 +1,8 @@
 from psycopg2.pool import SimpleConnectionPool, ThreadedConnectionPool
 from psycopg2.extras import RealDictCursor
-from errors import DatabaseException
-from events import DatabaseEvents
+from .errors import DatabaseException
+from .events import DatabaseEvents
+from .column import Column
 
 SELF_UPDATE_OPERATORS = {
         "_inc": " + ",
@@ -12,8 +13,7 @@ SELF_UPDATE_OPERATORS = {
 class Database:
 
     
-    __pool = ThreadedConnectionPool(10, 100, user='postgres', port='5432', database='postgres',
-                                    host='localhost', password='postgres')
+    __pool = None
     __models = dict()
     __registered_models = dict()
     __enable_logger = False
@@ -26,7 +26,7 @@ class Database:
         self.schema = schema
         self.table = table
         self.columns = columns
-        self.connect()
+        # self.connect()
 
     def __del__(self):
         if self.transaction:
@@ -66,8 +66,8 @@ class Database:
         self.connection = Database.__pool.getconn()
         self.cursor = self.connection.cursor(cursor_factory=RealDictCursor)
         self.connected = True
-        self.transaction = False
-        self.connection.autocommit = True
+        self.transaction = self.transaction
+        self.connection.autocommit = not self.transaction
 
     def disconnect(self):
         if not self.is_connected():
@@ -132,16 +132,17 @@ class Database:
                         select {}
                         from ( select {} ) {}
                     ))   {}
-                    from ( select {} from {}.{} {} {} {} {} ) {} {} 
+                    from ( select {} {} from {}.{} {} {} {} {} {} {} ) {} {} 
                 ) {}
-            """.format(alias,self.table,alias,select_columns_str,alias,alias,self.get_columns_to_comma_seperated_str(alias),
-                       Database.schema,self.table,alias,where_str,limit_str,offset_str, alias,append_sql,alias
+            """.format(alias,self.table,alias,select_columns_str,alias,alias,DistinctOn.make_distinct_on(self,kwargs.get('distinct_on',None)),self.get_columns_to_comma_seperated_str(alias),
+                       Database.schema,self.table,alias,where_str,GroupBy.make_group_by(self,kwargs.get('group_by',None),alias),OrderBy.make_order_by(self,kwargs.get('order_by',None),alias),limit_str,offset_str, alias,append_sql,alias
              )
             self.query(sql_str,args)
             results = self.get_first()
             results = results[self.table]
             DatabaseEvents.execute_select_events(self.table,results,self)
         except Exception as e:
+            print(e)
             DatabaseEvents.execute_error_events(self.table,e,self)
             results = list()
         finally:
@@ -214,9 +215,15 @@ class Database:
     def insert_one(self, args: dict, returning=True):
         try:
             config = {}
+            relational_config = {}
             for column in self.columns.values():
                 if column.name in args:
                     config[column.name] = args[column.name]
+            for relation in self.relations.values():
+                if relation.alias in config:
+                    relational_config[relation.alias] = config[relation.alias]
+                    if not isinstance(relational_config[relation.alias],list):
+                        relational_config[relation.alias] = [config[relation.alias]]
             if len(config.keys()) == 0:
                 raise DatabaseException(**DatabaseException.NoValueOperation)
             columns = ",".join(config.keys())
@@ -226,10 +233,24 @@ class Database:
                 self.get_db_and_table_alias(), columns, placeholders, self.get_returning(returning))
             self.query(query_str, values)
             result = self.get_returning_value(returning)
+            relational_results = {}
+            for alias,rel_config in relational_config.items():
+                relation = self.relations.get(alias)
+                if not relation:
+                    continue 
+                model = Database.get_registered_model(relation.to_table)
+                if not model:
+                    continue
+                relational_instance = model(connection=self.connection,cursor=self.cursor,transaction=self.transaction)
+                relational_result = relational_instance.insert_many(rel_config,returning)
+                relational_results[alias] = relational_result
             if isinstance(result, bool):
                 DatabaseEvents.execute_insert_events(self.table,result,self)
                 return result
             DatabaseEvents.execute_insert_events(self.table,result[0],self)
+            for key,value in relational_results.items():
+                result[0][key] = value 
+
             return result[0]
         except Exception as e:
             DatabaseEvents.execute_error_events(self.table,e,self)
@@ -249,6 +270,7 @@ class Database:
         return self.with_transaction(callback)
 
     def query(self, q_str, args=None):
+        self.connect()
         if Database.__enable_logger:
             print(q_str, args)
         if not isinstance(args, list):
@@ -276,7 +298,7 @@ class Database:
         if returning:
             return self.get_all()
         return True
-
+ 
 
     @staticmethod
     def get_update_column_to_str(col_name:str,config:any):
@@ -385,7 +407,13 @@ class Database:
     def set_logger(value: bool):
         Database.__enable_logger = value
 
-
+    @staticmethod
+    def init(host='localhost',port='5432',user='postgres',password='postgres',pool_type='threaded',schema='public',minconn=10,maxconn=50):
+        Database.schema = schema 
+        if pool_type == 'threaded':
+            Database.__pool = ThreadedConnectionPool(minconn,maxconn,host=host,port=port,user=user,password=password)
+        else:
+            Database.__pool = SimpleConnectionPool(minconn,maxconn,host=host,port=port,user=user,password=password)
 
 
 allowedOrderDirectionsKeys = {
@@ -477,6 +505,77 @@ WHERE_CLAUSE_OPERATORS = {
     "_nin_array": " <> any ",
 }
 
+
+class OrderBy:
+     
+    @staticmethod
+    def make_order_by(model,order_by:list | None,alias:str = None):
+        if not order_by:
+            return ""
+        order_by_parts = []
+        for column in order_by:
+            if not isinstance(column,dict):
+                continue 
+            col_name = list(column.keys())[0]
+            print(col_name)
+            order_by_direction = allowedOrderDirectionsKeys.get(list(column.values())[0],'asc')
+            if model.columns.get(col_name):
+                if alias:
+                    order_by_parts.append(f"{alias}.{col_name} {order_by_direction}")
+                else:
+                    order_by_parts.append(f"{col_name} {order_by_direction}")
+        if not order_by_parts:
+            return ""
+        order_by_str = ",".join(order_by_parts)
+
+        return f" order by {order_by_str} "
+    
+
+class DistinctOn:
+
+    @staticmethod
+    def make_distinct_on(model,distinct_on:list | None,alias:str = None):
+        if not distinct_on:
+            return ""
+        distinct_on_parts = []
+        for column in distinct_on:
+            if not isinstance(column,str):
+                continue 
+             
+            if model.columns.get(column):
+                if alias:
+                    distinct_on_parts.append(f"{alias}.{column}")
+                else:
+                    distinct_on_parts.append(f"{column}")
+        if not distinct_on_parts:
+            return ""
+        distinct_on_str = ",".join(distinct_on_parts)
+
+        return f" distinct on ({distinct_on_str}) "
+    
+class GroupBy:
+
+    @staticmethod
+    def make_group_by(model,groub_by:list | None,alias:str = None):
+        if not groub_by:
+            return ""
+        group_by_parts = []
+        for column in groub_by:
+            if not isinstance(column,str):
+                continue 
+             
+            if model.columns.get(column):
+                if alias:
+                    group_by_parts.append(f"{alias}.{column}")
+                else:
+                    group_by_parts.append(f"{column}")
+        if not group_by_parts:
+            return ""
+        group_by_str = ",".join(group_by_parts)
+
+        return f" group by {group_by_str} "
+    
+
 class Where:
 
     @staticmethod
@@ -525,8 +624,12 @@ class Where:
                             sql += f" %s {operator_sql_str}({alias}.{column})"
                             args.append(value)
                         else:
+                           
                             sql += f" {operator_sql_str} %s "
-                            args.append(value)
+                            if isinstance(value,Column):
+                                sql += f" {alias}.{value.name} "
+                            else: 
+                                args.append(value)
             elif column in model.relations:
                 relation = model.relations[column]
                 relational_model = Database.get_registered_model_instance(relation.to_table)

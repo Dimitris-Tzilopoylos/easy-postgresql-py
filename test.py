@@ -1,13 +1,17 @@
-from model import Model
-from column import Column
-from relation import Relation
-from database import Database
+from pg_engine.database import Database
+from pg_engine.column import Column
+from pg_engine.relation import Relation
+from pg_engine.model import Model
+
+
+Database.init()
+ 
 class User(Model):
     id = Column(type='int8', primary=True, nullable=False)
     email = Column(type="text", nullable=False, unique=True)
     password = Column(type="text", nullable=False)
     role_id = Column(type='int8', nullable=False)
-
+    name = Column(type="text")
 
     role = Relation(from_table="users",to_table="roles",from_column="role_id",to_column="id",alias="role",type="object")
 
@@ -38,8 +42,10 @@ Database.register_model(Product)
 
 user = User()
 
-users = user.find(where={
-    "_and":[{"email":{"_eq":"admin@admin.com"}},{"email":{"_eq":"sddd@ddd"}}, {"_or":[{"role":{"name":{"_eq":"admin"}}},{"role":{"name":{"_eq":"superadmin"}}},{"_and":[{"email":{"_eq":"admin@admin.com"}},{"email":{"_eq":"sddd@ddd"}}]} ]}]
-},limit=2)
-print(users )
- 
+# Database.on_error('roles',lambda data,instance: print(data))
+# Database.on_insert('roles',lambda data,instance: print("here",data))
+# Database.on_delete('roles',lambda data,instance: print("here",data))
+
+# role = Role()
+# res = role.delete(where={"name":{"_ilike":"te"}})
+  

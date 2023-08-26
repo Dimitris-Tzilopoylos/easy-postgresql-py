@@ -1,5 +1,5 @@
 class Column:
-    def __init__(self, name='', type='text', unique=False, nullable=False, default_value=None, primary=False, auto_increment=False) -> None:
+    def __init__(self, name='', type='text', unique=False, nullable=False, default_value=None, primary=False, auto_increment=False,length=None,check:str=None) -> None:
         self.name = name
         self.type = type
         self.unique = unique
@@ -7,6 +7,8 @@ class Column:
         self.nullable = nullable
         self.primary = primary
         self.default_value = default_value
+        self.length = length 
+        self.check = check
 
     def get_create_table_sql(self):
         null = "" if self.nullable else "not null"

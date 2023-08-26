@@ -1,4 +1,8 @@
-from database import Database
+from .database import Database
+from .database import DistinctOn
+from .database import OrderBy
+from .database import GroupBy
+from .database import Where
 
 class Relation:
     def __init__(self,from_table:str,to_table:str,from_column:str,to_column:str,alias:str,type:str) -> None:
@@ -48,8 +52,10 @@ class Relation:
             append_sql += sql 
             args.extend(append_args)
             idx = new_index
+        where_str,where_args = Where.make_where_clause(model,config.get('where',None),depth_alias,depth,start_with_where=False,is_first_entry=False)
         limit_str,limit_args = Database.make_limit(config.get('limit',None))
         offset_str,offset_args = Database.make_offset(config.get('offset',None))
+        args.extend(where_args)
         args.extend(limit_args)
         args.extend(offset_args)
         query_str = """ 
@@ -60,7 +66,7 @@ class Relation:
                 from ( select {} ) {}
             ))  {}
             from (
-                select {} from {}.{} {} where {}.{} = {}.{} {} {}
+                select {} {} from {}.{} {} where {}.{} = {}.{} {} {} {} {} {}
             ) {} {} ) {} )   as {} on true 
         """.format(depth_alias,
                    coalesce_str,
@@ -70,6 +76,7 @@ class Relation:
                    model_columns_str,
                    depth_alias,
                    depth_alias,
+                   DistinctOn.make_distinct_on(model,config.get('distinct_on',None)),
                    preserved_model_columns_str,
                    Database.schema,
                    self.to_table,
@@ -78,6 +85,9 @@ class Relation:
                    self.from_column,
                    depth_alias,
                    self.to_column,
+                   where_str,
+                   GroupBy.make_group_by(model,config.get('group_by',None),depth_alias),
+                   OrderBy.make_order_by(model,config.get('order_by',None),depth_alias),
                    limit_str,
                    offset_str,
                    depth_alias,

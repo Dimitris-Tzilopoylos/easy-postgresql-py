@@ -1,6 +1,6 @@
-from database import Database
-from column import Column
-from relation import Relation
+from .database import Database
+from .column import Column
+from .relation import Relation
 
 class Model(Database):
     def __init__(self, schema='public', table='', connection=None, cursor=None, transaction=False):
