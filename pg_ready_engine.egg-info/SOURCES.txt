@@ -2,6 +2,7 @@ setup.py
 pg_engine/__init__.py
 pg_engine/column.py
 pg_engine/database.py
+pg_engine/engine.py
 pg_engine/errors.py
 pg_engine/events.py
 pg_engine/migrations.py
