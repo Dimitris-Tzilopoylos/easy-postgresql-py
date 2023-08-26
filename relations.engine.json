@@ -1,0 +1,12 @@
+{
+    "users": [
+        {
+            "alias": "role",
+            "from_table": "users",
+            "to_table": "roles",
+            "from_column": "role_id",
+            "to_column": "id",
+            "type": "object"
+        }
+    ]
+}
