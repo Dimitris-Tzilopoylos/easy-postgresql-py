@@ -3,6 +3,7 @@ from psycopg2.extras import RealDictCursor
 from .errors import DatabaseException
 from .events import DatabaseEvents
 from .column import Column
+from .raw_sql import RawSQL
 
 SELF_UPDATE_OPERATORS = {
         "_inc": " + ",
@@ -147,7 +148,6 @@ class Database:
             results = list()
         finally:
             return results
-
 
     def find_one(self,**kwargs):
         kwargs['limit'] = 1
@@ -514,6 +514,10 @@ class OrderBy:
             return ""
         order_by_parts = []
         for column in order_by:
+            if isinstance(column,RawSQL):
+                raw_sql_str,_ = column.to_value(alias)
+                order_by_parts.append(raw_sql_str)
+                continue
             if not isinstance(column,dict):
                 continue 
             col_name = list(column.keys())[0]
@@ -539,6 +543,10 @@ class DistinctOn:
             return ""
         distinct_on_parts = []
         for column in distinct_on:
+            if isinstance(column,RawSQL):
+                raw_sql_str,_ = column.to_value(alias)
+                distinct_on_parts.append(raw_sql_str)
+                continue
             if not isinstance(column,str):
                 continue 
              
@@ -561,6 +569,10 @@ class GroupBy:
             return ""
         group_by_parts = []
         for column in groub_by:
+            if isinstance(column,RawSQL):
+                raw_sql_str,_ = column.to_value(alias)
+                group_by_parts.append(raw_sql_str)
+                continue
             if not isinstance(column,str):
                 continue 
              
@@ -589,7 +601,12 @@ class Where:
         if not where:
             return "",args 
         sql = " where " if start_with_where else ""
-       
+
+        if isinstance(where,RawSQL):
+            raw_str,raw_args = where.to_value(alias)
+            sql += Where.to_binding_operation(raw_str,is_first_entry,q_binder)
+            args.extend(raw_args)
+            return sql 
         for column,config in where.items():
             
             if column in QUERY_BINDER_KEYS:
@@ -612,10 +629,24 @@ class Where:
             elif column in model.columns:
                 sql += Where.to_binding_operation(f"{alias}.{column}",is_first_entry,q_binder)
                 is_first_entry = False 
+                if isinstance(config,RawSQL):
+                    raw_sql_str,raw_sql_args = config.to_value(alias)
+                    if len(raw_sql_str):
+                        sql += raw_sql_str
+                        is_first_entry = False 
+                    if raw_sql_args:
+                        args.extend(raw_sql_args)
                 for operator,value in config.items():
                     if operator in WHERE_CLAUSE_OPERATORS:
+                        
                         operator_sql_str = WHERE_CLAUSE_OPERATORS[operator]
+                        if isinstance(value,RawSQL):
+                                raw_sql_str,raw_sql_args = value.to_value(alias)
+                                sql += f" {operator_sql_str} {raw_sql_str} "
+                                args.extend(raw_sql_args)
+                                continue
                         if operator in REQUIRE_CAST_TO_NULL:
+                            
                             sql += f" {operator_sql_str} null "
                         elif operator in REQUIRE_WILDCARD_TRANSFORMATION:
                             sql += f" {operator_sql_str} %s "
