@@ -4,6 +4,8 @@ from .column import Column
 from .relation import Relation
 import os
 import json 
+from typing import Type
+
 
 class Engine:
     db = Database
@@ -24,7 +26,7 @@ class Engine:
     
 
     @staticmethod
-    def model(table_name:str):
+    def model(table_name:str) -> Type[Model]:
         return Engine.model_factory.get(table_name,None)
 
     @staticmethod

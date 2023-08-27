@@ -58,8 +58,9 @@ from pg_engine.engine import Engine
 Engine.init()
 # Engine.db.set_logger(True)
 instance = Engine.model('users')()
+Engine.db.set_logger(True)
+ 
+users = instance.aggregate(count=True)
 
-print(instance.relations)
-users = instance.find(include={"role":True})
 
 print(users)

@@ -99,6 +99,27 @@ class Database:
         finally:
             return result
 
+    def aggregate(self,count:bool=None,min:dict | None=None,max:dict | None=None,sum:dict | None=None,avg:dict | None=None,where:dict | None = None,distinct_on:list | None = None,group_by:list | None = None):
+        config = {
+            "count":count,
+            "min":min,
+            "max":max,
+            "sum":sum,
+            "avg":avg,
+            "where":where,
+            "distinct_on":distinct_on,
+            "group_by":group_by
+        }
+        agg_sql,args = Aggregation.build_aggregate(self,config,None,None,0)
+        if not agg_sql:
+            raise DatabaseException(DatabaseException.NoValueOperation,500)
+        
+        self.query(agg_sql,args)
+        if distinct_on:
+            return self.get_all()
+        return self.get_first()
+
+    
     def find(self,**kwargs):
         try:
             depth = 0
@@ -112,11 +133,15 @@ class Database:
             select_columns_str = Database.relational_and_model_columns_str(self,depth,kwargs.get('include',dict()))
             append_sql = ""
             for relational_key in include.keys():
-                relation = self.relations.get(relational_key,None)
+                agg_relation = Aggregation.is_aggregate(self,relational_key)
+                if agg_relation:
+                    relation = agg_relation
+                else:
+                    relation = self.relations.get(relational_key,None)
                 if not relation:
                     continue 
                 config = include.get(relational_key,dict())
-                sql,append_args,next_index = relation.get_select_lateral_join_relational_str(alias,depth + 1,idx,config) 
+                sql,append_args,next_index = relation.get_select_lateral_join_relational_str(alias,depth + 1,idx,config,agg_relation is not None) 
                 append_sql += sql 
                 args.extend(append_args)
                 idx = next_index
@@ -336,7 +361,7 @@ class Database:
         
         if relational_columns:
             for index in range(len(relational_columns)):
-                relational_columns[index] = "{}.{}".format(Database.make_depth_alias(relational_columns[index],depth + index + 1),relational_columns[index])
+                relational_columns[index] = "{}.{}".format(Database.make_depth_alias(relational_columns[index],depth  + 1),relational_columns[index])
             
             cols = [model_columns_str]
             cols.extend(relational_columns)
@@ -506,6 +531,116 @@ WHERE_CLAUSE_OPERATORS = {
 }
 
 
+class Aggregation:
+
+    @staticmethod
+    def is_aggregate(base_model,alias:str):
+        if base_model.relations:
+            if alias.endswith('_aggregate'):
+                non_aggregate_part = alias.split('_aggregate')[0]
+                return  base_model.relations.get(non_aggregate_part,None)
+        return None 
+
+    @staticmethod
+    def make_count(model,config:dict | None):
+        count = config.get('count')
+        if not count:
+            return [] 
+        
+        return["'count', count(*)"]
+
+    @staticmethod
+    def to_aggregation_multiple_columns(model,alias:str | None,agg_type:str,agg:dict):
+        str_parts = []
+        if alias:
+            alias = f"{alias}."
+        else:
+            alias = ""
+        for column,val in agg.items():
+            if not val:
+                continue
+            if model.columns.get(column):  
+                str_parts.append(f"'{column}',{agg_type}({alias}{column})")
+
+        if not str_parts:
+            return None
+        
+        return  ",".join(str_parts) 
+
+    @staticmethod
+    def make_min(model,config: dict | None,alias:str | None):
+        if not config:
+            return []
+        sql =  Aggregation.to_aggregation_multiple_columns(model,alias,'min',config)
+        if not sql:
+            return []
+        return [f"'min', json_build_object({sql})"]
+    
+    @staticmethod
+    def make_max(model,config: dict | None,alias:str | None):
+        if not config:
+            return []
+        sql =  Aggregation.to_aggregation_multiple_columns(model,alias,'max',config)
+        if not sql:
+            return []
+        return [f"'max', json_build_object({sql})"]
+    
+    @staticmethod
+    def make_avg(model,config: dict | None,alias:str | None):
+        if not config:
+            return []
+        sql =  Aggregation.to_aggregation_multiple_columns(model,alias,'avg',config)
+        if not sql:
+            return []
+        return [f"'avg', json_build_object({sql})"]
+    
+    @staticmethod
+    def make_sum(model,config: dict | None,alias:str | None):
+        if not config:
+            return []
+        sql =  Aggregation.to_aggregation_multiple_columns(model,alias,'sum',config)
+        if not sql:
+            return []
+        return [f"'sum', json_build_object({sql})"]
+
+    @staticmethod
+    def make_aggregation(model,config:dict | None,alias:str):
+        str_parts = list()
+        str_parts.extend(Aggregation.make_count(model,config))
+        str_parts.extend(Aggregation.make_min(model,config.get('min',None),alias))
+        str_parts.extend(Aggregation.make_max(model,config.get('max',None),alias))
+        str_parts.extend(Aggregation.make_avg(model,config.get('avg',None),alias))
+        str_parts.extend(Aggregation.make_sum(model,config.get('sum',None),alias))
+        if not str_parts:
+            return ""
+        
+
+        combined_str = ",".join(str_parts)
+        return f"json_build_object({combined_str}) as {alias}" 
+    
+    @staticmethod
+    def build_aggregate(model,config:dict | None,relation,prev_alias:str | None,depth:int = 0):
+        alias = Database.make_depth_alias(model.table if not relation else relation.alias,depth) + "_aggregate"
+        args = list()
+        agg_sql = Aggregation.make_aggregation(model,config,model.table+"_aggregate" if not relation else relation.alias + "_aggregate")
+        if not agg_sql:
+            return "",[]
+        where_str,where_args = Where.make_where_clause(model,config.get('where',None),alias,depth,"and",not relation,not relation)
+
+        if not relation:
+            sql = f"""select {DistinctOn.make_distinct_on(model,config.get('distinct_on'),alias)} {agg_sql} 
+            from {Database.schema}.{model.table} {alias} {where_str} {GroupBy.make_group_by(model,config.get('group_by'),alias)}
+            """
+        else :
+            sql = f""" left outer join lateral (
+            select {DistinctOn.make_distinct_on(model,config.get('distinct_on'),alias)} {agg_sql} 
+            from {Database.schema}.{model.table} as {alias} where {prev_alias}.{relation.from_column} = {alias}.{relation.to_column}  {where_str} {GroupBy.make_group_by(model,config.get('group_by'))}
+            )    as {alias} on true """
+         
+        args.extend(where_args)
+        return sql,args
+            
+
 class OrderBy:
      
     @staticmethod
@@ -521,7 +656,6 @@ class OrderBy:
             if not isinstance(column,dict):
                 continue 
             col_name = list(column.keys())[0]
-            print(col_name)
             order_by_direction = allowedOrderDirectionsKeys.get(list(column.values())[0],'asc')
             if model.columns.get(col_name):
                 if alias:
@@ -564,11 +698,11 @@ class DistinctOn:
 class GroupBy:
 
     @staticmethod
-    def make_group_by(model,groub_by:list | None,alias:str = None):
-        if not groub_by:
+    def make_group_by(model,group_by:list | None,alias:str = None):
+        if not group_by:
             return ""
         group_by_parts = []
-        for column in groub_by:
+        for column in group_by:
             if isinstance(column,RawSQL):
                 raw_sql_str,_ = column.to_value(alias)
                 group_by_parts.append(raw_sql_str)
