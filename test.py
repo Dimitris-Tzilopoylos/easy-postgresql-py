@@ -62,5 +62,4 @@ Engine.db.set_logger(True)
  
 users = instance.aggregate(count=True)
 
-
 print(users)

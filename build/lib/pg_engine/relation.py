@@ -3,7 +3,7 @@ from .database import DistinctOn
 from .database import OrderBy
 from .database import GroupBy
 from .database import Where
-
+from .database import Aggregation
 class Relation:
     def __init__(self,from_table:str,to_table:str,from_column:str,to_column:str,alias:str,type:str) -> None:
         self.from_table = from_table
@@ -13,11 +13,15 @@ class Relation:
         self.alias = alias
         self.type = type 
 
-    def get_select_lateral_join_relational_str(self,prev_alias:str,depth:int,idx:int,config:dict):
+    def get_select_lateral_join_relational_str(self,prev_alias:str,depth:int,idx:int,config:dict,is_aggregate:bool = False):
         model = Database.get_registered_model_instance(self.to_table)
-       
+
         if not model:
             return "",list(),idx
+        if is_aggregate:
+            sql,args= Aggregation.build_aggregate(model,config,self,prev_alias,depth)
+            return sql,args,idx
+        
         coalesce_str = '->0' if self.type == 'object' else ''
         coalesce_fallback = 'null' if self.type == 'object' else '[]'
         depth_alias = self.make_depth_alias(self.alias,depth) if not Database.is_optimistic_aggregate_alias(self.alias) else  self.make_depth_alias(self.alias,depth) + "_aggregate" 

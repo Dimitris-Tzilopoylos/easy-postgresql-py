@@ -7,6 +7,7 @@ pg_engine/errors.py
 pg_engine/events.py
 pg_engine/migrations.py
 pg_engine/model.py
+pg_engine/raw_sql.py
 pg_engine/relation.py
 pg_ready_engine.egg-info/PKG-INFO
 pg_ready_engine.egg-info/SOURCES.txt
