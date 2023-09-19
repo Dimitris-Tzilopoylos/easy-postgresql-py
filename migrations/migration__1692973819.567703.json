@@ -1,7 +1,0 @@
-{
-    "up": "drop schema if exists test_migrations cascade;",
-    "down": "create schema if not exists test_migrations;",
-    "id": "97dd4a65dddb4818995b06fde8929f6d",
-    "timestamp": 1692973819.567703,
-    "applied": true
-}

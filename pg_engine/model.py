@@ -3,13 +3,13 @@ from .column import Column
 from .relation import Relation
 
 class Model(Database):
-    def __init__(self, schema='public', table='', connection=None, cursor=None, transaction=False):
+    def __init__(self, schema='public', table='', connection=None, cursor=None, transaction=False,database='postgres'):
         self.columns = dict()
         self.relations = dict()
         self.make_columns(self)
         self.make_relations(self)
-        super().__init__(schema, table, connection,
-                         cursor, transaction, columns=self.columns)
+        super().__init__(schema=schema, table=table, connection=connection,
+                         cursor=cursor, transaction=transaction, columns=self.columns,database=database)
 
     @classmethod
     def make_columns(cls, self):

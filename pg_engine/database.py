@@ -437,6 +437,7 @@ class Database:
     @staticmethod
     def init(host='localhost',port='5432',user='postgres',password='postgres',pool_type='threaded',schema='public',minconn=10,maxconn=50,database='postgres'):
         Database.schema = schema 
+        Database.database = database
         if pool_type == 'threaded':
             Database.__pool = ThreadedConnectionPool(minconn,maxconn,host=host,port=port,user=user,password=password,database='postgres')
         else:
