@@ -19,7 +19,8 @@ class Database:
     __registered_models = dict()
     __enable_logger = False
     schema = 'public'
-    def __init__(self, schema='public', table='', connection=None, cursor=None, transaction=False, columns=dict()):
+    database = 'postgres'
+    def __init__(self, schema='public',database='postgres', table='', connection=None, cursor=None, transaction=False, columns=dict()):
         self.connection = connection
         self.cursor = cursor
         self.transaction = transaction
@@ -27,6 +28,7 @@ class Database:
         self.schema = schema
         self.table = table
         self.columns = columns
+        self.database = database
         # self.connect()
 
     def __del__(self):
@@ -433,12 +435,12 @@ class Database:
         Database.__enable_logger = value
 
     @staticmethod
-    def init(host='localhost',port='5432',user='postgres',password='postgres',pool_type='threaded',schema='public',minconn=10,maxconn=50):
+    def init(host='localhost',port='5432',user='postgres',password='postgres',pool_type='threaded',schema='public',minconn=10,maxconn=50,database='postgres'):
         Database.schema = schema 
         if pool_type == 'threaded':
-            Database.__pool = ThreadedConnectionPool(minconn,maxconn,host=host,port=port,user=user,password=password)
+            Database.__pool = ThreadedConnectionPool(minconn,maxconn,host=host,port=port,user=user,password=password,database='postgres')
         else:
-            Database.__pool = SimpleConnectionPool(minconn,maxconn,host=host,port=port,user=user,password=password)
+            Database.__pool = SimpleConnectionPool(minconn,maxconn,host=host,port=port,user=user,password=password,database='postgres')
 
 
 allowedOrderDirectionsKeys = {

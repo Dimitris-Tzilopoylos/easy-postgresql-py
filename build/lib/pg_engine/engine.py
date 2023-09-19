@@ -16,10 +16,10 @@ class Engine:
     __relations_path = "relations.engine.json"
 
     @staticmethod
-    def init(host='localhost',port='5432',user='postgres',password='postgres',pool_type='threaded',schema='public',minconn=10,maxconn=50,auth_options:dict | None= None,relations_filename = 'relations.engine.json'):
-        Database.init(host=host,port=port,user=user,password=password,pool_type=pool_type,schema=schema,minconn=minconn,maxconn=maxconn)
+    def init(host='localhost',port='5432',user='postgres',password='postgres',pool_type='threaded',schema='public',minconn=10,maxconn=50,auth_options:dict | None= None,relations_filename = 'relations.engine.json',database='postgres'):
+        Database.init(host=host,port=port,user=user,password=password,pool_type=pool_type,schema=schema,minconn=minconn,maxconn=maxconn,database=database)
         Engine.set_relations_filename(relations_filename)
-        Engine.db = Database()
+        Engine.db = Database(schema=schema,database=database)
         Engine.get_tables()
         Engine.auth_options = auth_options
         Engine.build_models()
