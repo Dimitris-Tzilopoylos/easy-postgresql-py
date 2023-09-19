@@ -90,8 +90,8 @@ class Engine:
             columns = table.get('columns')
             relations = table_relations
             class ModelFactory(Model):
-                def __init__(self, schema=Engine.db.schema, table=table_name, connection=None, cursor=None, transaction=False):
-                    super().__init__(schema, table, connection, cursor, transaction)
+                def __init__(self, schema=Engine.db.schema, table=table_name, connection=None, cursor=None, transaction=False,database=Engine.db.database):
+                    super().__init__(schema, table, connection, cursor, transaction,database=database)
                     for column in columns:
                         name = column.get('name')
                         nullable = column.get('nullable')
