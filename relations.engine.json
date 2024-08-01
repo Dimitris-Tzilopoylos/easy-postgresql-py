@@ -1,12 +1,15 @@
 {
-    "users": [
-        {
-            "alias": "role",
-            "from_table": "users",
-            "to_table": "roles",
-            "from_column": "role_id",
-            "to_column": "id",
-            "type": "object"
-        }
-    ]
+    "root_engine": {
+        "engine_users": [
+            {
+                "alias": "role",
+                "from_table": "engine_users",
+                "to_table": "engine_roles",
+                "from_column": "role_id",
+                "to_column": "id",
+                "type": "object",
+                "schema": "root_engine"
+            }
+        ]
+    }
 }

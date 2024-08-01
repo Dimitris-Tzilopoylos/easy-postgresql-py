@@ -29,8 +29,7 @@ class Database:
         self.table = table
         self.columns = columns
         self.database = database
-        # self.connect()
-
+ 
     def __del__(self):
         if not self.is_connected():
             return 
@@ -91,9 +90,10 @@ class Database:
     def get_all(self):
         return self.cursor.fetchall()
 
-    def with_transaction(self, callback,):
+    def with_transaction(self, callback):
         result = None
         try:
+            self.connect()
             self.begin()
             result = callback(self)
             self.commit()
@@ -101,6 +101,7 @@ class Database:
             self.rollback()
             result = None
         finally:
+            self.disconnect()
             return result
 
     def aggregate(self,count:bool=None,min:dict | None=None,max:dict | None=None,sum:dict | None=None,avg:dict | None=None,where:dict | None = None,distinct_on:list | None = None,group_by:list | None = None):
@@ -142,7 +143,6 @@ class Database:
                     relation = agg_relation
                 else:
                     relation = self.relations.get(relational_key,None)
-                    print(relation)
                 if not relation:
                     continue 
                 config = include.get(relational_key,dict())
@@ -166,15 +166,14 @@ class Database:
                     from ( select {} {} from {}.{} {} {} {} {} {} {} ) {} {} 
                 ) {}
             """.format(alias,self.table,alias,select_columns_str,alias,alias,DistinctOn.make_distinct_on(self,kwargs.get('distinct_on',None)),self.get_columns_to_comma_seperated_str(alias),
-                       Database.schema,self.table,alias,where_str,GroupBy.make_group_by(self,kwargs.get('group_by',None),alias),OrderBy.make_order_by(self,kwargs.get('order_by',None),alias),limit_str,offset_str, alias,append_sql,alias
+                       self.schema,self.table,alias,where_str,GroupBy.make_group_by(self,kwargs.get('group_by',None),alias),OrderBy.make_order_by(self,kwargs.get('order_by',None),alias),limit_str,offset_str, alias,append_sql,alias
              )
             self.query(sql_str,args)
             results = self.get_first()
             results = results[self.table]
-            DatabaseEvents.execute_select_events(self.table,results,self)
+            DatabaseEvents.execute_select_events(self.schema,self.table,results,self)
         except Exception as e:
-            print(e)
-            DatabaseEvents.execute_error_events(self.table,e,self)
+            DatabaseEvents.execute_error_events(self.schema,self.table,e,self)
             results = list()
         finally:
             return results
@@ -207,9 +206,9 @@ class Database:
                 self.get_db_and_table_alias(), ",".join(cols), where_str,self.get_returning(returning))
             self.query(q_str, values)
             result = self.get_returning_value(returning)
-            DatabaseEvents.execute_update_events(self.table,result,self)
+            DatabaseEvents.execute_update_events(self.schema,self.table,result,self)
         except Exception as e:
-            DatabaseEvents.execute_error_events(self.table,e,self)
+            DatabaseEvents.execute_error_events(self.schema,self.table,e,self)
             result = None
         finally:
             return result
@@ -221,9 +220,9 @@ class Database:
                 self.get_db_and_table_alias(), where_str, self.get_returning(returning))
             self.query(q_str,where_args)
             results = self.get_returning_value(returning)
-            DatabaseEvents.execute_delete_events(self.table,results,self)
+            DatabaseEvents.execute_delete_events(self.schema,self.table,results,self)
         except Exception as e:
-            DatabaseEvents.execute_error_events(self.table,e,self)
+            DatabaseEvents.execute_error_events(self.schema,self.table,e,self)
             results = None
         finally:
             return results
@@ -268,22 +267,22 @@ class Database:
                 relation = self.relations.get(alias)
                 if not relation:
                     continue 
-                model = Database.get_registered_model(relation.to_table)
+                model = Database.get_registered_model(relation.schema,relation.to_table)
                 if not model:
                     continue
                 relational_instance = model(connection=self.connection,cursor=self.cursor,transaction=self.transaction)
                 relational_result = relational_instance.insert_many(rel_config,returning)
                 relational_results[alias] = relational_result
             if isinstance(result, bool):
-                DatabaseEvents.execute_insert_events(self.table,result,self)
+                DatabaseEvents.execute_insert_events(self.schema,self.table,result,self)
                 return result
-            DatabaseEvents.execute_insert_events(self.table,result[0],self)
+            DatabaseEvents.execute_insert_events(self.schema,self.table,result[0],self)
             for key,value in relational_results.items():
                 result[0][key] = value 
 
             return result[0]
         except Exception as e:
-            DatabaseEvents.execute_error_events(self.table,e,self)
+            DatabaseEvents.execute_error_events(self.schema,self.table,e,self)
             result = None
         finally:
             return result
@@ -390,49 +389,52 @@ class Database:
 
     @staticmethod
     def register_model(model):
-        print("here")
         instance = model()
-        Database.__models[instance.table] = model
-        Database.__registered_models[instance.table] = instance
+        if not Database.__models.get(instance.schema):
+            Database.__models[instance.schema] = dict()
+        Database.__models[instance.schema][instance.table] = model
+        if not Database.__registered_models.get(instance.schema):
+            Database.__registered_models[instance.schema] = dict()
+        Database.__registered_models[instance.schema][instance.table] = instance
 
     @staticmethod
-    def get_registered_model_instance(table:str):
-        return Database.__registered_models.get(table,None)
+    def get_registered_model_instance(schema:str,table:str):
+        return Database.__registered_models.get(schema,dict()).get(table,None)
     
     @staticmethod
-    def get_registered_model(table:str):
-        return Database.__models.get(table,None)
+    def get_registered_model(schema:str,table:str):
+        return Database.__models.get(schema,dict()).get(table,None)
 
     @staticmethod
-    def check_table_in_registered_models_or_throw(table):
-        model = Database.__models.get(table, None)
+    def check_table_in_registered_models_or_throw(schema:str,table:str):
+        model = Database.__models.get(schema,dict()).get(table, None)
         if not model:
             raise Exception('no such table')
 
     @staticmethod
-    def on_insert(table, fn):
-        Database.check_table_in_registered_models_or_throw(table)
-        DatabaseEvents.register_event(table, DatabaseEvents.INSERT, fn)
+    def on_insert(schema,table, fn):
+        Database.check_table_in_registered_models_or_throw(schema,table)
+        DatabaseEvents.register_event(schema,table, DatabaseEvents.INSERT, fn)
 
     @staticmethod
-    def on_select(table, fn):
-        Database.check_table_in_registered_models_or_throw(table)
-        DatabaseEvents.register_event(table, DatabaseEvents.SELECT, fn)
+    def on_select(schema,table, fn):
+        Database.check_table_in_registered_models_or_throw(schema,table)
+        DatabaseEvents.register_event(schema,table, DatabaseEvents.SELECT, fn)
 
     @staticmethod
-    def on_update(table, fn):
-        Database.check_table_in_registered_models_or_throw(table)
-        DatabaseEvents.register_event(table, DatabaseEvents.UPDATE, fn)
+    def on_update(schema,table, fn):
+        Database.check_table_in_registered_models_or_throw(schema,table)
+        DatabaseEvents.register_event(schema,table, DatabaseEvents.UPDATE, fn)
 
     @staticmethod
-    def on_delete(table, fn):
-        Database.check_table_in_registered_models_or_throw(table)
-        DatabaseEvents.register_event(table, DatabaseEvents.DELETE, fn)
+    def on_delete(schema,table, fn):
+        Database.check_table_in_registered_models_or_throw(schema,table)
+        DatabaseEvents.register_event(schema,table, DatabaseEvents.DELETE, fn)
 
     @staticmethod
-    def on_error(table, fn):
-        Database.check_table_in_registered_models_or_throw(table)
-        DatabaseEvents.register_event(table, DatabaseEvents.ERROR, fn)
+    def on_error(schema,table, fn):
+        Database.check_table_in_registered_models_or_throw(schema,table)
+        DatabaseEvents.register_event(schema,table, DatabaseEvents.ERROR, fn)
 
     @staticmethod
     def set_logger(value: bool):
@@ -635,12 +637,12 @@ class Aggregation:
 
         if not relation:
             sql = f"""select {DistinctOn.make_distinct_on(model,config.get('distinct_on'),alias)} {agg_sql} 
-            from {Database.schema}.{model.table} {alias} {where_str} {GroupBy.make_group_by(model,config.get('group_by'),alias)}
+            from {model.schema}.{model.table} {alias} {where_str} {GroupBy.make_group_by(model,config.get('group_by'),alias)}
             """
         else :
             sql = f""" left outer join lateral (
             select {DistinctOn.make_distinct_on(model,config.get('distinct_on'),alias)} {agg_sql} 
-            from {Database.schema}.{model.table} as {alias} where {prev_alias}.{relation.from_column} = {alias}.{relation.to_column}  {where_str} {GroupBy.make_group_by(model,config.get('group_by'))}
+            from {model.schema}.{model.table} as {alias} where {prev_alias}.{relation.from_column} = {alias}.{relation.to_column}  {where_str} {GroupBy.make_group_by(model,config.get('group_by'))}
             )    as {alias} on true """
          
         args.extend(where_args)
@@ -810,7 +812,7 @@ class Where:
                 sql_append,append_args = Where.make_where_clause(relational_model,config,relational_alias,depth+1,"and",False,False)
                 relational_sql = f""" {alias}.{relation.from_column} 
                 in ( select {relation.to_column} 
-                from {Database.schema}.{relation.to_table} {relational_alias} 
+                from {relation.schema}.{relation.to_table} {relational_alias} 
                 where {alias}.{relation.from_column} = {relational_alias}.{relation.to_column} {sql_append}) """
                 args.extend(append_args)
 

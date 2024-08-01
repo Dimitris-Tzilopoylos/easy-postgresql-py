@@ -1,32 +1,32 @@
-from pg_engine.database import Database 
-from pg_engine.model import Model 
-from pg_engine.column import Column
+from  pg_engine.engine import Engine 
+from fastapi import FastAPI
 
 
-Database.init(host="localhost",port="5435",user="postgres",password="postgres")
+app = FastAPI()
+
+EngineConfig = {
+    "host":"localhost",
+    "port":"5435",
+    "user":"postgres",
+    "password":"postgres",
+    "minconn":2,
+    "maxconn":5
+}
+
+Engine.init(**EngineConfig)
 
 
+cache = None
 
-class User(Model):
-    def __init__(self, schema='public', table='users', connection=None, cursor=None, transaction=False, database='postgres'):
-        super().__init__(schema, table, connection, cursor, transaction, database)
+def on_select(data,instance):
+    print(data,instance.is_connected())
 
-    id = Column(name="id",type="uuid",primary=True)
-    email = Column(name="email",type="text")
-    password = Column(name="password",type="text")
+Engine.db.on_select("root_engine","engine_users",on_select)
+ 
+@app.get("/{schema}/{table}")
+async def read_root(schema:str,table:str):
+    instance =  Engine.model(schema,table)
+    data = instance.find_one()
+    instance.disconnect()
+    return data
 
-
-
-
-
-
-model = User()
-
-
-
-data = model.find()
-data = model.find()
-data = model.insert_one({"email":"dim@dim33.com","password":"123123123"})
-print(type(data))
-data = model.update({"email":"dim@dim2.com"},{"email":{"_eq":"dim@dim.com"}})
-print(data)

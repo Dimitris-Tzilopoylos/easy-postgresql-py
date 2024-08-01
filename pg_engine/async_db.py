@@ -1,5 +1,5 @@
 from .errors import DatabaseException
-from .events import DatabaseEvents
+from .events import AsyncDatabaseEvents
 from .column import Column
 from .raw_sql import RawSQL
 import asyncpg
@@ -189,9 +189,9 @@ class AsyncDatabase:
             if len(results) > 0:
                 results = json.loads(results[0][self.table])
             
-            DatabaseEvents.execute_select_events(self.table,results,self)
+            await AsyncDatabaseEvents.execute_select_events(self.table,results,self)
         except Exception as e:
-            DatabaseEvents.execute_error_events(self.table,e,self)
+            await AsyncDatabaseEvents.execute_error_events(self.table,e,self)
             results = list()
         finally:
             if not self.transaction:
@@ -224,11 +224,11 @@ class AsyncDatabase:
             values.extend(where_args)
             q_str = "update {} set {} {} {}".format(
                 self.get_db_and_table_alias(), ",".join(cols), where_str,self.get_returning(returning))
-            result = await self.query(q_str, values,DatabaseEvents.UPDATE,returning)
+            result = await self.query(q_str, values,AsyncDatabaseEvents.UPDATE,returning)
             # result = self.get_returning_value(returning)
-            DatabaseEvents.execute_update_events(self.table,result,self)
+            await AsyncDatabaseEvents.execute_update_events(self.table,result,self)
         except Exception as e:
-            DatabaseEvents.execute_error_events(self.table,e,self)
+            await AsyncDatabaseEvents.execute_error_events(self.table,e,self)
             result = None
         finally:
             return result
@@ -238,11 +238,11 @@ class AsyncDatabase:
             where_str,where_args = Where.make_where_clause(self,where,self.table)
             q_str = "delete from {} {} {}".format(
                 self.get_db_and_table_alias(), where_str, self.get_returning(returning))
-            results = await self.query(q_str,where_args,DatabaseEvents.DELETE,returning)
+            results = await self.query(q_str,where_args,AsyncDatabaseEvents.DELETE,returning)
             # results = self.get_returning_value(returning)
-            DatabaseEvents.execute_delete_events(self.table,results,self)
+            await AsyncDatabaseEvents.execute_delete_events(self.table,results,self)
         except Exception as e:
-            DatabaseEvents.execute_error_events(self.table,e,self)
+            await AsyncDatabaseEvents.execute_error_events(self.table,e,self)
             results = None
         finally:
             return results
@@ -280,7 +280,7 @@ class AsyncDatabase:
             values = list(config.values())
             query_str = 'insert into {}({}) values({}) {}'.format(
                 self.get_db_and_table_alias(), columns, placeholders, self.get_returning(returning))
-            result = await self.query(query_str, values,DatabaseEvents.INSERT,returning)
+            result = await self.query(query_str, values,AsyncDatabaseEvents.INSERT,returning)
             # result = self.get_returning_value(returning)
             relational_results = {}
             for alias,rel_config in relational_config.items():
@@ -294,15 +294,15 @@ class AsyncDatabase:
                 relational_result = await relational_instance.insert_many(rel_config,returning)
                 relational_results[alias] = relational_result
             if isinstance(result, bool):
-                DatabaseEvents.execute_insert_events(self.table,result,self)
+                await AsyncDatabaseEvents.execute_insert_events(self.table,result,self)
                 return result
-            DatabaseEvents.execute_insert_events(self.table,result[0],self)
+            await AsyncDatabaseEvents.execute_insert_events(self.table,result[0],self)
             for key,value in relational_results.items():
                 result[0][key] = value 
 
             return result[0]
         except Exception as e:
-            DatabaseEvents.execute_error_events(self.table,e,self)
+            await AsyncDatabaseEvents.execute_error_events(self.table,e,self)
             result = None
         finally:
             return result
@@ -328,8 +328,8 @@ class AsyncDatabase:
         
         return  re.sub(r'%s', replace, sql_str)
     
-    async def query(self, q_str, args=None,statement_type=DatabaseEvents.SELECT,returning=False):
-        if statement_type == DatabaseEvents.SELECT and returning:
+    async def query(self, q_str, args=None,statement_type=AsyncDatabaseEvents.SELECT,returning=False):
+        if statement_type == AsyncDatabaseEvents.SELECT and returning:
             raise DatabaseException(DatabaseException.ReturningWithSelectStatement)
         await self.connect()
         
@@ -343,12 +343,12 @@ class AsyncDatabase:
             print(q_str, args)
         if len(args) > 0:
             q_str = self.format_placeholders(q_str)
-            if statement_type == DatabaseEvents.SELECT or returning:
+            if statement_type == AsyncDatabaseEvents.SELECT or returning:
                 result = await self.connection.fetch(q_str, *args)
             else:
                 result = await self.connection.execute(q_str, *args)
         else:
-            if statement_type == DatabaseEvents.SELECT or returning:
+            if statement_type == AsyncDatabaseEvents.SELECT or returning:
                 result = await self.connection.fetch(q_str)
             else:
                 result = await self.connection.execute(q_str)
@@ -455,27 +455,27 @@ class AsyncDatabase:
     @staticmethod
     def on_insert(table, fn):
         AsyncDatabase.check_table_in_registered_models_or_throw(table)
-        DatabaseEvents.register_event(table, DatabaseEvents.INSERT, fn)
+        AsyncDatabaseEvents.register_event(table, AsyncDatabaseEvents.INSERT, fn)
 
     @staticmethod
     def on_select(table, fn):
         AsyncDatabase.check_table_in_registered_models_or_throw(table)
-        DatabaseEvents.register_event(table, DatabaseEvents.SELECT, fn)
+        AsyncDatabaseEvents.register_event(table, AsyncDatabaseEvents.SELECT, fn)
 
     @staticmethod
     def on_update(table, fn):
         AsyncDatabase.check_table_in_registered_models_or_throw(table)
-        DatabaseEvents.register_event(table, DatabaseEvents.UPDATE, fn)
+        AsyncDatabaseEvents.register_event(table, AsyncDatabaseEvents.UPDATE, fn)
 
     @staticmethod
     def on_delete(table, fn):
         AsyncDatabase.check_table_in_registered_models_or_throw(table)
-        DatabaseEvents.register_event(table, DatabaseEvents.DELETE, fn)
+        AsyncDatabaseEvents.register_event(table, AsyncDatabaseEvents.DELETE, fn)
 
     @staticmethod
     def on_error(table, fn):
         AsyncDatabase.check_table_in_registered_models_or_throw(table)
-        DatabaseEvents.register_event(table, DatabaseEvents.ERROR, fn)
+        AsyncDatabaseEvents.register_event(table, AsyncDatabaseEvents.ERROR, fn)
 
     @staticmethod
     def set_logger(value: bool):

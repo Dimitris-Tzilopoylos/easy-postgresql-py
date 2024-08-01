@@ -6,13 +6,14 @@ from .database import GroupBy
 from .database import Where
 from .database import Aggregation
 class Relation:
-    def __init__(self,from_table:str,to_table:str,from_column:str,to_column:str,alias:str,type:str) -> None:
+    def __init__(self,from_table:str,to_table:str,from_column:str,to_column:str,alias:str,type:str,schema:str) -> None:
         self.from_table = from_table
         self.to_table = to_table
         self.from_column = from_column
         self.to_column = to_column 
         self.alias = alias
         self.type = type 
+        self.schema = schema
 
     def get_select_lateral_join_relational_str_async(self,prev_alias:str,depth:int,idx:int,config:dict,is_aggregate:bool = False):
         model = AsyncDatabase.get_registered_model_instance(self.to_table)
@@ -82,7 +83,7 @@ class Relation:
                    depth_alias,
                    DistinctOn.make_distinct_on(model,config.get('distinct_on',None)),
                    preserved_model_columns_str,
-                   Database.schema,
+                   self.schema,
                    self.to_table,
                    depth_alias,
                    prev_alias,
@@ -102,7 +103,7 @@ class Relation:
         return query_str,args,idx
 
     def get_select_lateral_join_relational_str(self,prev_alias:str,depth:int,idx:int,config:dict,is_aggregate:bool = False):
-        model = Database.get_registered_model_instance(self.to_table)
+        model = Database.get_registered_model_instance(self.schema,self.to_table)
         if not model:
             return "",list(),idx
         if is_aggregate:
@@ -169,7 +170,7 @@ class Relation:
                    depth_alias,
                    DistinctOn.make_distinct_on(model,config.get('distinct_on',None)),
                    preserved_model_columns_str,
-                   Database.schema,
+                   self.schema,
                    self.to_table,
                    depth_alias,
                    prev_alias,
