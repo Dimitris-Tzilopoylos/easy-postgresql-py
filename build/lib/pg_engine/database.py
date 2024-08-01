@@ -228,7 +228,7 @@ class Database:
         finally:
             return results
 
-    def insert_many(self, args: list, returning=True):
+    def insert_many(self, args: list(), returning=True):
         results = dict()
         results[self.table] = list()
         try:
@@ -509,6 +509,7 @@ QUERY_BINDER_KEYS = {
 }
 
 WHERE_CLAUSE_OPERATORS = {
+   
     "_in": " in ",
     "_nin": " not in ",
     "_lt": " < ",

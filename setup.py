@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 #twine upload dist/*
 setup(
     name='pg_ready_engine',
-    version='0.9',
+    version='0.99',
     packages=find_packages(),
-    install_requires=['psycopg2','uuid'],
+    install_requires=['psycopg2','uuid','asyncpg'],
 )

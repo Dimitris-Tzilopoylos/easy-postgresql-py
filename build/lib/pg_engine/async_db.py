@@ -1,9 +1,10 @@
-from psycopg2.pool import SimpleConnectionPool, ThreadedConnectionPool
-from psycopg2.extras import RealDictCursor
 from .errors import DatabaseException
 from .events import DatabaseEvents
 from .column import Column
 from .raw_sql import RawSQL
+import asyncpg
+import json
+import re
 
 SELF_UPDATE_OPERATORS = {
         "_inc": " + ",
@@ -11,7 +12,19 @@ SELF_UPDATE_OPERATORS = {
         "_mult": " * ",
         "_div": " / ",
 }
-class Database:
+
+class AsyncPool:
+    pool: asyncpg.Pool = None 
+    @staticmethod
+    async def create_pool(**kwargs):
+        AsyncPool.pool = await asyncpg.create_pool(**kwargs)
+        return AsyncPool.pool
+        
+
+
+
+
+class AsyncDatabase:
 
     
     __pool = None
@@ -20,6 +33,13 @@ class Database:
     __enable_logger = False
     schema = 'public'
     database = 'postgres'
+
+    
+
+    @staticmethod
+    async def create_pool(**kwargs):
+        await AsyncPool.create_pool(**kwargs)
+
     def __init__(self, schema='public',database='postgres', table='', connection=None, cursor=None, transaction=False, columns=dict()):
         self.connection = connection
         self.cursor = cursor
@@ -30,13 +50,11 @@ class Database:
         self.columns = columns
         self.database = database
         # self.connect()
-
-    def __del__(self):
-        if not self.is_connected():
-            return 
-        if self.transaction:
-            self.rollback()
-        self.disconnect()
+    
+    # def __del__(self):
+    #     if self.transaction:
+    #         self.rollback()
+    #     self.disconnect()
 
     def is_connected(self):
         return self.connected
@@ -44,42 +62,39 @@ class Database:
     def is_transaction_open(self):
         return self.transaction
 
-    def begin(self):
+    async def begin(self):
         if not self.is_connected():
             raise DatabaseException(**DatabaseException.NotConnected)
 
-        self.cursor.execute('BEGIN;')
+        await self.connection.execute('BEGIN;')
         self.transaction = True
 
-    def commit(self):
+    async def commit(self):
         if not self.is_connected():
             raise DatabaseException(**DatabaseException.NotConnected)
 
-        self.cursor.execute('COMMIT;')
+        await self.connection.execute('COMMIT;')
         self.transaction = False
 
-    def rollback(self):
+    async def rollback(self):
         if not self.is_connected():
             raise DatabaseException(**DatabaseException.NotConnected)
 
-        self.cursor.execute('ROLLBACK;')
+        await self.connection.execute('ROLLBACK;')
         self.transaction = False
 
-    def connect(self):
+    async def connect(self):
         if self.connected:
             return
-        self.connection = Database.__pool.getconn()
-        self.cursor = self.connection.cursor(cursor_factory=RealDictCursor)
+        self.connection = await AsyncDatabase.__pool.acquire()
         self.connected = True
         self.transaction = self.transaction
-        self.connection.autocommit = not self.transaction
+        # await self.connection.set_autocommit(not self.transaction)
 
-    def disconnect(self):
+    async def disconnect(self):
         if not self.is_connected():
             return
-
-        self.cursor.close()
-        Database.__pool.putconn(self.connection)
+        await AsyncDatabase.__pool.release(self.connection)
         self.transaction = False
         self.connected = False
         self.connection = None
@@ -91,19 +106,20 @@ class Database:
     def get_all(self):
         return self.cursor.fetchall()
 
-    def with_transaction(self, callback,):
+    async def with_transaction(self, callback):
         result = None
         try:
-            self.begin()
-            result = callback(self)
-            self.commit()
+            await self.begin()
+            result = await callback(self)
+            await self.commit()
         except:
-            self.rollback()
+            await self.rollback()
             result = None
         finally:
+            await self.disconnect()
             return result
 
-    def aggregate(self,count:bool=None,min:dict | None=None,max:dict | None=None,sum:dict | None=None,avg:dict | None=None,where:dict | None = None,distinct_on:list | None = None,group_by:list | None = None):
+    async def aggregate(self,count:bool=None,min:dict | None=None,max:dict | None=None,sum:dict | None=None,avg:dict | None=None,where:dict | None = None,distinct_on:list | None = None,group_by:list | None = None):
         config = {
             "count":count,
             "min":min,
@@ -117,42 +133,44 @@ class Database:
         agg_sql,args = Aggregation.build_aggregate(self,config,None,None,0)
         if not agg_sql:
             raise DatabaseException(DatabaseException.NoValueOperation,500)
-        
-        self.query(agg_sql,args)
+    
+        results = await self.query(agg_sql,args)
         if distinct_on:
-            return self.get_all()
-        return self.get_first()
+            return [json.loads(entry[0]) for entry in results]
+        return json.loads(results[0][self.table])
 
     
-    def find(self,**kwargs):
+    async def find(self,**kwargs):
         try:
             depth = 0
             idx = 1
             args = list()
-            alias = Database.make_depth_alias(self.table,depth)
+            alias = AsyncDatabase.make_depth_alias(self.table,depth)
             
             include = kwargs.get('include',dict())
+      
             if not isinstance(include,dict):
                 include = dict()
-            select_columns_str = Database.relational_and_model_columns_str(self,depth,kwargs.get('include',dict()))
+            select_columns_str = AsyncDatabase.relational_and_model_columns_str(self,depth,kwargs.get('include',dict()))
             append_sql = ""
             for relational_key in include.keys():
+                 
                 agg_relation = Aggregation.is_aggregate(self,relational_key)
                 if agg_relation:
                     relation = agg_relation
                 else:
                     relation = self.relations.get(relational_key,None)
-                    print(relation)
                 if not relation:
                     continue 
                 config = include.get(relational_key,dict())
-                sql,append_args,next_index = relation.get_select_lateral_join_relational_str(alias,depth + 1,idx,config,agg_relation is not None) 
+                 
+                sql,append_args,next_index = relation.get_select_lateral_join_relational_str_async(alias,depth + 1,idx,config,agg_relation is not None) 
                 append_sql += sql 
                 args.extend(append_args)
                 idx = next_index
             where_str,where_args = Where.make_where_clause(self,kwargs.get('where',None),alias,depth)
-            limit_str,limit_args = Database.make_limit(kwargs.get('limit',None))
-            offset_str,offset_args = Database.make_offset(kwargs.get('offset',None))
+            limit_str,limit_args = AsyncDatabase.make_limit(kwargs.get('limit',None))
+            offset_str,offset_args = AsyncDatabase.make_offset(kwargs.get('offset',None))
             args.extend(where_args)
             args.extend(limit_args)
             args.extend(offset_args)
@@ -166,25 +184,28 @@ class Database:
                     from ( select {} {} from {}.{} {} {} {} {} {} {} ) {} {} 
                 ) {}
             """.format(alias,self.table,alias,select_columns_str,alias,alias,DistinctOn.make_distinct_on(self,kwargs.get('distinct_on',None)),self.get_columns_to_comma_seperated_str(alias),
-                       Database.schema,self.table,alias,where_str,GroupBy.make_group_by(self,kwargs.get('group_by',None),alias),OrderBy.make_order_by(self,kwargs.get('order_by',None),alias),limit_str,offset_str, alias,append_sql,alias
+                       AsyncDatabase.schema,self.table,alias,where_str,GroupBy.make_group_by(self,kwargs.get('group_by',None),alias),OrderBy.make_order_by(self,kwargs.get('order_by',None),alias),limit_str,offset_str, alias,append_sql,alias
              )
-            self.query(sql_str,args)
-            results = self.get_first()
-            results = results[self.table]
+            results = await self.query(sql_str,args)
+            # results = self.get_first()
+            if len(results) > 0:
+                results = json.loads(results[0][self.table])
+            
             DatabaseEvents.execute_select_events(self.table,results,self)
         except Exception as e:
-            print(e)
             DatabaseEvents.execute_error_events(self.table,e,self)
             results = list()
         finally:
+            if not self.transaction:
+                await self.disconnect()
             return results
 
-    def find_one(self,**kwargs):
+    async def find_one(self,**kwargs):
         kwargs['limit'] = 1
-        result = self.find(**kwargs)
-        return result[0]
+        result = await self.find(**kwargs)
+        return result[0] if len(result) > 0 else None
 
-    def update(self, _set: dict, where:dict, returning=True):
+    async def update(self, _set: dict, where:dict, returning=True):
         try:
             config = {}
             for column in self.columns.values():
@@ -197,7 +218,7 @@ class Database:
             values = list()
             cols = list()
             for col_name,value in config.items():
-                str,arg = Database.get_update_column_to_str(col_name,value)
+                str,arg = AsyncDatabase.get_update_column_to_str(col_name,value)
                 cols.append(str)
                 values.append(arg)
             
@@ -205,8 +226,8 @@ class Database:
             values.extend(where_args)
             q_str = "update {} set {} {} {}".format(
                 self.get_db_and_table_alias(), ",".join(cols), where_str,self.get_returning(returning))
-            self.query(q_str, values)
-            result = self.get_returning_value(returning)
+            result = await self.query(q_str, values,DatabaseEvents.UPDATE,returning)
+            # result = self.get_returning_value(returning)
             DatabaseEvents.execute_update_events(self.table,result,self)
         except Exception as e:
             DatabaseEvents.execute_error_events(self.table,e,self)
@@ -214,13 +235,13 @@ class Database:
         finally:
             return result
 
-    def delete(self, where:dict,returning=True):
+    async def delete(self, where:dict,returning=True):
         try:
             where_str,where_args = Where.make_where_clause(self,where,self.table)
             q_str = "delete from {} {} {}".format(
                 self.get_db_and_table_alias(), where_str, self.get_returning(returning))
-            self.query(q_str,where_args)
-            results = self.get_returning_value(returning)
+            results = await self.query(q_str,where_args,DatabaseEvents.DELETE,returning)
+            # results = self.get_returning_value(returning)
             DatabaseEvents.execute_delete_events(self.table,results,self)
         except Exception as e:
             DatabaseEvents.execute_error_events(self.table,e,self)
@@ -228,12 +249,12 @@ class Database:
         finally:
             return results
 
-    def insert_many(self, args: list, returning=True):
+    async def insert_many(self, args: list(), returning=True):
         results = dict()
         results[self.table] = list()
         try:
             for ipt in args:
-                result = self.insert_one(ipt, returning)
+                result = await self.insert_one(ipt, returning)
                 if not result:
                     raise DatabaseException(
                         **DatabaseException.InsertionFailed)
@@ -242,7 +263,7 @@ class Database:
             results[self.table] = list()
         return results
 
-    def insert_one(self, args: dict, returning=True):
+    async def insert_one(self, args: dict, returning=True):
         try:
             config = {}
             relational_config = {}
@@ -261,18 +282,18 @@ class Database:
             values = list(config.values())
             query_str = 'insert into {}({}) values({}) {}'.format(
                 self.get_db_and_table_alias(), columns, placeholders, self.get_returning(returning))
-            self.query(query_str, values)
-            result = self.get_returning_value(returning)
+            result = await self.query(query_str, values,DatabaseEvents.INSERT,returning)
+            # result = self.get_returning_value(returning)
             relational_results = {}
             for alias,rel_config in relational_config.items():
                 relation = self.relations.get(alias)
                 if not relation:
                     continue 
-                model = Database.get_registered_model(relation.to_table)
+                model = AsyncDatabase.get_registered_model(relation.to_table)
                 if not model:
                     continue
                 relational_instance = model(connection=self.connection,cursor=self.cursor,transaction=self.transaction)
-                relational_result = relational_instance.insert_many(rel_config,returning)
+                relational_result = await relational_instance.insert_many(rel_config,returning)
                 relational_results[alias] = relational_result
             if isinstance(result, bool):
                 DatabaseEvents.execute_insert_events(self.table,result,self)
@@ -288,29 +309,54 @@ class Database:
         finally:
             return result
 
-    def create_tx(self,args:dict,returning=True):
-        def callback(): 
-            return self.insert_one(args,returning)
+    async def create_tx(self,args:dict,returning=True):
+        async def callback(): 
+            return await self.insert_one(args,returning)
         
-        return self.with_transaction(callback)
+        return await self.with_transaction(callback)
     
-    def create_many_tx(self,args,returning=True):
-        def callback(): 
-            return self.insert_many(args,returning)
-        return self.with_transaction(callback)
+    async def create_many_tx(self,args,returning=True):
+        async def callback(): 
+            return await self.insert_many(args,returning)
+        return await self.with_transaction(callback)
 
-    def query(self, q_str, args=None):
-        self.connect()
-        if Database.__enable_logger:
-            print(q_str, args)
+    def format_placeholders(self,sql_str):
+        count = 0  
+        def replace(match):
+            nonlocal count
+            count += 1
+            
+            return f'${count}'
+        
+        return  re.sub(r'%s', replace, sql_str)
+    
+    async def query(self, q_str, args=None,statement_type=DatabaseEvents.SELECT,returning=False):
+        if statement_type == DatabaseEvents.SELECT and returning:
+            raise DatabaseException(DatabaseException.ReturningWithSelectStatement)
+        await self.connect()
+        
+        result = None
+       
         if not isinstance(args, list):
             args = tuple()
         else:
             args = tuple(args)
+        if AsyncDatabase.__enable_logger:
+            print(q_str, args)
         if len(args) > 0:
-            self.cursor.execute(q_str, args)
+            q_str = self.format_placeholders(q_str)
+            if statement_type == DatabaseEvents.SELECT or returning:
+                result = await self.connection.fetch(q_str, *args)
+            else:
+                result = await self.connection.execute(q_str, *args)
         else:
-            self.cursor.execute(q_str)
+            if statement_type == DatabaseEvents.SELECT or returning:
+                result = await self.connection.fetch(q_str)
+            else:
+                result = await self.connection.execute(q_str)
+        if not self.transaction:
+            await self.disconnect()
+        return result
 
     def get_db_and_table_alias(self):
         return "{}.{}".format(self.schema, self.table)
@@ -360,13 +406,13 @@ class Database:
     @staticmethod
     def relational_and_model_columns_str(model,depth:int,config:dict):
         
-        model_columns_str = model.get_columns_to_comma_seperated_str(Database.make_depth_alias(model.table,depth))
+        model_columns_str = model.get_columns_to_comma_seperated_str(AsyncDatabase.make_depth_alias(model.table,depth))
        
-        relational_columns = Database.get_relational_columns(config)
+        relational_columns = AsyncDatabase.get_relational_columns(config)
         
         if relational_columns:
             for index in range(len(relational_columns)):
-                relational_columns[index] = "{}.{}".format(Database.make_depth_alias(relational_columns[index],depth  + 1),relational_columns[index])
+                relational_columns[index] = "{}.{}".format(AsyncDatabase.make_depth_alias(relational_columns[index],depth  + 1),relational_columns[index])
             
             cols = [model_columns_str]
             cols.extend(relational_columns)
@@ -390,62 +436,59 @@ class Database:
 
     @staticmethod
     def register_model(model):
-        print("here")
         instance = model()
-        Database.__models[instance.table] = model
-        Database.__registered_models[instance.table] = instance
+        AsyncDatabase.__models[instance.table] = model
+        AsyncDatabase.__registered_models[instance.table] = instance
 
     @staticmethod
     def get_registered_model_instance(table:str):
-        return Database.__registered_models.get(table,None)
+        return AsyncDatabase.__registered_models.get(table,None)
     
     @staticmethod
     def get_registered_model(table:str):
-        return Database.__models.get(table,None)
+        return AsyncDatabase.__models.get(table,None)
 
     @staticmethod
     def check_table_in_registered_models_or_throw(table):
-        model = Database.__models.get(table, None)
+        model = AsyncDatabase.__models.get(table, None)
         if not model:
             raise Exception('no such table')
 
     @staticmethod
     def on_insert(table, fn):
-        Database.check_table_in_registered_models_or_throw(table)
+        AsyncDatabase.check_table_in_registered_models_or_throw(table)
         DatabaseEvents.register_event(table, DatabaseEvents.INSERT, fn)
 
     @staticmethod
     def on_select(table, fn):
-        Database.check_table_in_registered_models_or_throw(table)
+        AsyncDatabase.check_table_in_registered_models_or_throw(table)
         DatabaseEvents.register_event(table, DatabaseEvents.SELECT, fn)
 
     @staticmethod
     def on_update(table, fn):
-        Database.check_table_in_registered_models_or_throw(table)
+        AsyncDatabase.check_table_in_registered_models_or_throw(table)
         DatabaseEvents.register_event(table, DatabaseEvents.UPDATE, fn)
 
     @staticmethod
     def on_delete(table, fn):
-        Database.check_table_in_registered_models_or_throw(table)
+        AsyncDatabase.check_table_in_registered_models_or_throw(table)
         DatabaseEvents.register_event(table, DatabaseEvents.DELETE, fn)
 
     @staticmethod
     def on_error(table, fn):
-        Database.check_table_in_registered_models_or_throw(table)
+        AsyncDatabase.check_table_in_registered_models_or_throw(table)
         DatabaseEvents.register_event(table, DatabaseEvents.ERROR, fn)
 
     @staticmethod
     def set_logger(value: bool):
-        Database.__enable_logger = value
+        AsyncDatabase.__enable_logger = value
 
     @staticmethod
-    def init(host='localhost',port='5432',user='postgres',password='postgres',pool_type='threaded',schema='public',minconn=10,maxconn=50,database='postgres'):
-        Database.schema = schema 
-        Database.database = database
-        if pool_type == 'threaded':
-            Database.__pool = ThreadedConnectionPool(minconn,maxconn,host=host,port=port,user=user,password=password,database='postgres')
-        else:
-            Database.__pool = SimpleConnectionPool(minconn,maxconn,host=host,port=port,user=user,password=password,database='postgres')
+    async def init(host='localhost',port='5432',user='postgres',password='postgres',pool_type='threaded',schema='public',minconn=10,maxconn=50,database='postgres'):
+        AsyncDatabase.schema = schema 
+        AsyncDatabase.database = database
+        AsyncDatabase.__pool = await AsyncPool.create_pool(host=host,port=port,user=user,password=password,database='postgres')
+        
 
 
 allowedOrderDirectionsKeys = {
@@ -509,6 +552,7 @@ QUERY_BINDER_KEYS = {
 }
 
 WHERE_CLAUSE_OPERATORS = {
+   
     "_in": " in ",
     "_nin": " not in ",
     "_lt": " < ",
@@ -626,21 +670,21 @@ class Aggregation:
     
     @staticmethod
     def build_aggregate(model,config:dict | None,relation,prev_alias:str | None,depth:int = 0):
-        alias = Database.make_depth_alias(model.table if not relation else relation.alias,depth) + "_aggregate"
+        alias = model.table if not relation else AsyncDatabase.make_depth_alias(model.table if not relation else relation.alias,depth) + "_aggregate"
         args = list()
-        agg_sql = Aggregation.make_aggregation(model,config,model.table+"_aggregate" if not relation else relation.alias + "_aggregate")
+        agg_sql = Aggregation.make_aggregation(model,config,model.table  if not relation else relation.alias + "_aggregate")
         if not agg_sql:
             return "",[]
         where_str,where_args = Where.make_where_clause(model,config.get('where',None),alias,depth,"and",not relation,not relation)
 
         if not relation:
             sql = f"""select {DistinctOn.make_distinct_on(model,config.get('distinct_on'),alias)} {agg_sql} 
-            from {Database.schema}.{model.table} {alias} {where_str} {GroupBy.make_group_by(model,config.get('group_by'),alias)}
+            from {AsyncDatabase.schema}.{model.table} {alias} {where_str} {GroupBy.make_group_by(model,config.get('group_by'),alias)}
             """
         else :
             sql = f""" left outer join lateral (
             select {DistinctOn.make_distinct_on(model,config.get('distinct_on'),alias)} {agg_sql} 
-            from {Database.schema}.{model.table} as {alias} where {prev_alias}.{relation.from_column} = {alias}.{relation.to_column}  {where_str} {GroupBy.make_group_by(model,config.get('group_by'))}
+            from {AsyncDatabase.schema}.{model.table} as {alias} where {prev_alias}.{relation.from_column} = {alias}.{relation.to_column}  {where_str} {GroupBy.make_group_by(model,config.get('group_by'))}
             )    as {alias} on true """
          
         args.extend(where_args)
@@ -803,14 +847,14 @@ class Where:
                                 args.append(value)
             elif column in model.relations:
                 relation = model.relations[column]
-                relational_model = Database.get_registered_model_instance(relation.to_table)
+                relational_model = AsyncDatabase.get_registered_model_instance(relation.to_table)
                 if not relational_model:
                     continue
-                relational_alias = Database.make_depth_alias(relation.alias,depth)
+                relational_alias = AsyncDatabase.make_depth_alias(relation.alias,depth)
                 sql_append,append_args = Where.make_where_clause(relational_model,config,relational_alias,depth+1,"and",False,False)
                 relational_sql = f""" {alias}.{relation.from_column} 
                 in ( select {relation.to_column} 
-                from {Database.schema}.{relation.to_table} {relational_alias} 
+                from {AsyncDatabase.schema}.{relation.to_table} {relational_alias} 
                 where {alias}.{relation.from_column} = {relational_alias}.{relation.to_column} {sql_append}) """
                 args.extend(append_args)
 
