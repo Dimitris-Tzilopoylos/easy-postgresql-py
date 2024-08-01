@@ -49,11 +49,11 @@ class Engine:
             Engine.db.disconnect()
 
     @staticmethod
-    def model(schema:str,table_name:str,connection = None) -> Type[Model]:
+    def model(schema:str,table_name:str,connection = None,cursor = None) -> Type[Model]:
         mdl = Engine.model_factory.get(schema,dict()).get(table_name,None)
         if not mdl:
             raise Exception(f"model {schema}.{table_name} was not found")
-        return mdl(connection=connection)    
+        return mdl(connection=connection,cursor=cursor)    
 
     @staticmethod
     def get_tables(schema):

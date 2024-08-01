@@ -1,6 +1,7 @@
 from  pg_engine.engine import Engine 
-from fastapi import FastAPI
-
+from fastapi import FastAPI,Depends,Request
+from contextlib import contextmanager
+from functools import wraps
 
 app = FastAPI()
 
@@ -18,15 +19,31 @@ Engine.init(**EngineConfig)
 
 cache = None
 
-def on_select(data,instance):
-    print(data,instance.is_connected())
-
-Engine.db.on_select("root_engine","engine_users",on_select)
  
-@app.get("/{schema}/{table}")
-async def read_root(schema:str,table:str):
-    instance =  Engine.model(schema,table)
-    data = instance.find_one()
-    instance.disconnect()
-    return data
 
+@contextmanager
+def get_db_connection(schema: str, table: str):
+    instance = Engine.model(schema, table)
+    instance.connect()
+    try:
+        yield instance
+    finally:
+        instance.disconnect()
+
+ 
+def with_engine_model(fn):
+    @wraps(fn)
+    async def wrapper_fn(*args,**kwargs):
+        with get_db_connection(kwargs.get("schema"),kwargs.get("table")) as db_instance:
+            kwargs["db_instance"] = db_instance
+            return await fn(*args,**kwargs)
+    return wrapper_fn    
+
+
+@app.get("/{schema}/{table}")
+@with_engine_model
+async def read_root(*args,schema,table):
+    # data = db_instance.find()
+    return schema
+
+ 

@@ -30,12 +30,12 @@ class Database:
         self.columns = columns
         self.database = database
  
-    def __del__(self):
-        if not self.is_connected():
-            return 
-        if self.transaction:
-            self.rollback()
-        self.disconnect()
+    # def __del__(self):
+    #     if not self.is_connected():
+    #         return 
+    #     if self.transaction:
+    #         self.rollback()
+    #     self.disconnect()
 
     def is_connected(self):
         return self.connected
